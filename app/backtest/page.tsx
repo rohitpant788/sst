@@ -16,6 +16,18 @@ interface BacktestTrade {
     holdingDays: number;
 }
 
+interface TradeActivity {
+    symbol: string;
+    type: "BUY" | "SELL";
+    price: number;
+    quantity: number;
+    amount: number;
+    buyNumber: number;
+    profit?: number;
+    date: string;
+    purchaseDate?: string;
+}
+
 interface OpenPosition {
     buyDate: string;
     buyPrice: number;
@@ -40,6 +52,7 @@ interface BacktestResult {
     winRate: number;
     totalProfit: number;
     totalProfitPercent: number;
+    cagr: number;
     realizedProfit: number;
     unrealizedProfit: number;
     blockedCapital: number;
@@ -60,6 +73,8 @@ interface AggregateResult {
     finalCapital: number;
     winRate: number;
     totalProfitPercent: number;
+    cagr: number;
+    maxDrawdown: number;
     benchmark?: {
         symbol: string;
         totalReturnPercent: number;
@@ -69,9 +84,20 @@ interface AggregateResult {
     };
 }
 
+interface PortfolioDailyLog {
+    date: string;
+    cash: number;
+    invested: number;
+    portfolioValue: number;
+    dayProfit: number;
+    totalProfit: number;
+    activities: TradeActivity[];
+}
+
 interface ApiResponse {
     results: BacktestResult[];
     aggregate: AggregateResult;
+    portfolioDiary?: PortfolioDailyLog[];
 }
 
 type UniverseType = "NIFTY_100" | "NIFTY_500" | "CUSTOM";
@@ -99,12 +125,20 @@ export default function BacktestPage() {
     // Defaults: 16 stocks, 3 levels
     const [maxStocks, setMaxStocks] = useState(16);
     const [avgLevels, setAvgLevels] = useState(3);
+    const [targetProfitPercent, setTargetProfitPercent] = useState(6);
+    const [exitStrategy, setExitStrategy] = useState<"WEIGHTED_AVERAGE" | "LIFO">("WEIGHTED_AVERAGE");
 
     // Results State
     const [loading, setLoading] = useState(false);
     const [apiResponse, setApiResponse] = useState<ApiResponse | null>(null);
     const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+
+    // Sorting State
+    const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" }>({
+        key: "date",
+        direction: "asc",
+    });
 
     // Derived Trade Size
     const calculatedTradeSize = useMemo(() => {
@@ -170,7 +204,10 @@ export default function BacktestPage() {
                 endDate: dateMode === "absolute" ? endDate : undefined,
                 initialCapital: capital,
                 tradeSizePercent: calculatedTradeSize,
-                symbols: finalSymbols
+                symbols: finalSymbols,
+                exitStrategy,
+                targetProfitPercent,
+                avgLevels
             };
 
             const res = await fetch("/api/backtest", {
@@ -191,6 +228,32 @@ export default function BacktestPage() {
         } finally {
             setLoading(false);
         }
+    };
+
+    // Sorting Logic
+    const sortedDiary = useMemo(() => {
+        if (!apiResponse?.portfolioDiary) return [];
+        const sorted = [...apiResponse.portfolioDiary];
+        sorted.sort((a, b) => {
+            // value extraction
+            let aValue = (a as any)[sortConfig.key];
+            let bValue = (b as any)[sortConfig.key];
+
+            // Special handling for nested or specific columns if needed
+            // currently all keys (date, portfolioValue, cash, invested, dayProfit, totalProfit) are top level
+
+            if (aValue < bValue) return sortConfig.direction === "asc" ? -1 : 1;
+            if (aValue > bValue) return sortConfig.direction === "asc" ? 1 : -1;
+            return 0;
+        });
+        return sorted;
+    }, [apiResponse, sortConfig]);
+
+    const handleSort = (key: string) => {
+        setSortConfig((current) => ({
+            key,
+            direction: current.key === key && current.direction === "asc" ? "desc" : "asc",
+        }));
     };
 
     return (
@@ -429,7 +492,54 @@ export default function BacktestPage() {
                             </div>
                         )}
 
-                        <div className="mt-8">
+                        <div className="mt-4">
+                            <label className="block text-sm text-gray-400 mb-2">Target Profit (%)</label>
+                            <input
+                                type="number"
+                                value={targetProfitPercent}
+                                onChange={(e) => setTargetProfitPercent(Number(e.target.value))}
+                                className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-lg focus:outline-none focus:border-cyan-400"
+                                placeholder="e.g. 6"
+                            />
+                            <p className="text-[10px] text-gray-500 mt-1">Target profit per trade/position.</p>
+                        </div>
+
+                        <div className="mt-6 border-t border-white/10 pt-4">
+                            <label className="block text-sm text-gray-400 mb-2">Exit Strategy</label>
+                            <div className="flex gap-2 p-1 bg-black/20 rounded-lg">
+                                <button
+                                    onClick={() => setExitStrategy("WEIGHTED_AVERAGE")}
+                                    className={`flex-1 py-1.5 rounded-md text-xs font-medium transition-colors ${exitStrategy === "WEIGHTED_AVERAGE" ? "bg-cyan-600 text-white" : "text-gray-400"
+                                        }`}
+                                >
+                                    Weighted Avg (Default)
+                                </button>
+                                <button
+                                    onClick={() => setExitStrategy("LIFO")}
+                                    className={`flex-1 py-1.5 rounded-md text-xs font-medium transition-colors ${exitStrategy === "LIFO" ? "bg-purple-600 text-white" : "text-gray-400"
+                                        }`}
+                                >
+                                    Individual (LIFO)
+                                </button>
+                            </div>
+                            <p className="text-[10px] text-gray-500 mt-2">
+                                {exitStrategy === "WEIGHTED_AVERAGE"
+                                    ? "Sells ALL positions when the average price hits target."
+                                    : "Sells individual positions as each hits its own target."}
+                            </p>
+                        </div>
+
+                        <div className="mt-8 flex flex-col gap-3">
+                            {apiResponse && (
+                                <button
+                                    onClick={() => window.print()}
+                                    className="print-hidden w-full px-4 py-3 bg-white/5 hover:bg-white/10 text-gray-300 rounded-lg transition-colors font-medium text-sm flex items-center justify-center gap-2"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9V2h12v7"></path><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><path d="M6 14h12v8H6z"></path></svg>
+                                    Export Results to PDF
+                                </button>
+                            )}
+
                             <button
                                 onClick={runBacktest}
                                 disabled={loading}
@@ -498,41 +608,56 @@ export default function BacktestPage() {
 
                         {/* Aggregate Summary */}
                         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-                            {/* Total Profit */}
-                            <div className="bg-white/5 rounded-xl p-4 border border-white/10 col-span-2 lg:col-span-1">
-                                <p className="text-gray-400 text-xs uppercase tracking-wider">Total Net Profit</p>
-                                <div className="flex items-baseline gap-2">
-                                    <p className={`text-2xl font-bold ${apiResponse.aggregate.totalProfit >= 0 ? "text-green-400" : "text-red-400"}`}>
-                                        ₹{apiResponse.aggregate.totalProfit.toLocaleString()}
-                                    </p>
-                                    <span className={`text-sm ${apiResponse.aggregate.totalProfitPercent >= 0 ? "text-green-400" : "text-red-400"}`}>
-                                        ({apiResponse.aggregate.totalProfitPercent.toFixed(2)}%)
-                                    </span>
+                            {/* Total Return */}
+                            <div className="bg-white/5 p-4 rounded-xl border border-white/10">
+                                <div className="text-gray-400 text-xs mb-1 uppercase tracking-wider">Total Return</div>
+                                <div className={`text-2xl font-bold ${apiResponse.aggregate.totalProfit >= 0 ? "text-green-400" : "text-red-400"}`}>
+                                    {apiResponse.aggregate.totalProfit >= 0 ? "+" : ""}
+                                    {(apiResponse.aggregate.totalProfitPercent ?? 0).toFixed(1)}%
+                                </div>
+                                <div className="text-sm text-gray-500">
+                                    ₹{apiResponse.aggregate.totalProfit.toLocaleString()}
                                 </div>
                             </div>
 
-                            {/* Realized Profit */}
-                            <div className="bg-white/5 rounded-xl p-4 border border-white/10">
-                                <p className="text-gray-400 text-xs uppercase tracking-wider">Realized Profit (Closed)</p>
-                                <p className={`text-xl font-bold ${apiResponse.aggregate.realizedProfit >= 0 ? "text-green-300" : "text-red-300"}`}>
-                                    ₹{apiResponse.aggregate.realizedProfit.toLocaleString()}
-                                </p>
+                            {/* CAGR */}
+                            <div className="bg-white/5 p-4 rounded-xl border border-white/10">
+                                <div className="text-gray-400 text-xs mb-1 uppercase tracking-wider">CAGR</div>
+                                <div className={`text-2xl font-bold ${apiResponse.aggregate.cagr >= 0 ? "text-purple-400" : "text-gray-400"}`}>
+                                    {(apiResponse.aggregate.cagr ?? 0).toFixed(1)}%
+                                </div>
+                                <div className="text-xs text-gray-500 mt-1">
+                                    Annualized Growth
+                                </div>
                             </div>
 
-                            {/* Unrealized Profit */}
-                            <div className="bg-white/5 rounded-xl p-4 border border-white/10">
-                                <p className="text-gray-400 text-xs uppercase tracking-wider">Unrealized P&L (Open)</p>
-                                <p className={`text-xl font-bold ${apiResponse.aggregate.unrealizedProfit >= 0 ? "text-blue-300" : "text-yellow-300"}`}>
-                                    ₹{apiResponse.aggregate.unrealizedProfit.toLocaleString()}
-                                </p>
+                            {/* Win Rate */}
+                            <div className="bg-white/5 p-4 rounded-xl border border-white/10">
+                                <div className="text-gray-400 text-xs mb-1 uppercase tracking-wider">Win Rate</div>
+                                <div className="text-2xl font-bold text-blue-400">
+                                    {(apiResponse.aggregate.winRate ?? 0).toFixed(1)}%
+                                </div>
+                                <div className="text-xs text-gray-500 mt-1">
+                                    {apiResponse.aggregate.totalTrades} Trades
+                                </div>
                             </div>
 
-                            {/* Blocked Capital */}
-                            <div className="bg-white/5 rounded-xl p-4 border border-white/10">
-                                <p className="text-gray-400 text-xs uppercase tracking-wider">Blocked Capital</p>
-                                <p className="text-xl font-bold text-orange-400">
-                                    ₹{apiResponse.aggregate.blockedCapital.toLocaleString()}
-                                </p>
+                            {/* Max Drawdown */}
+                            <div className="bg-white/5 p-4 rounded-xl border border-white/10">
+                                <div className="text-gray-400 text-xs mb-1 uppercase tracking-wider">Max Drawdown</div>
+                                <div className="text-2xl font-bold text-yellow-400">
+                                    -{Math.abs(apiResponse.aggregate.maxDrawdown ?? 0).toFixed(1)}%
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Tabs: Details vs Diary */}
+                        <div className="mb-8">
+                            <div className="flex border-b border-white/10">
+                                <button className="px-6 py-3 border-b-2 border-cyan-400 text-cyan-400 font-medium">
+                                    Stock-wise Details
+                                </button>
+                                {/* Note: Ideally use state for tabs, but simplifying for now or putting this below */}
                             </div>
                         </div>
 
@@ -645,6 +770,111 @@ export default function BacktestPage() {
                                 </table>
                             </div>
                         </div>
+
+                        {/* Trading Journal Table */}
+                        {apiResponse.portfolioDiary && (
+                            <div className="bg-white/5 rounded-xl border border-white/10 overflow-hidden mb-8">
+                                <div className="p-4 border-b border-white/10 flex justify-between items-center bg-black/20">
+                                    <h3 className="text-lg font-semibold text-purple-300">📔 Trading Journal (All Trades)</h3>
+                                    <span className="text-sm text-gray-400">{apiResponse.portfolioDiary.length} Trading Days</span>
+                                </div>
+                                <div className="max-h-[600px] overflow-auto">
+                                    <table className="w-full text-sm">
+                                        <thead className="bg-white/5 sticky top-0 z-10 text-gray-400 text-xs uppercase tracking-wider">
+                                            <tr>
+                                                {[
+                                                    { key: "date", label: "Date", align: "left" },
+                                                    { key: "portfolioValue", label: "Portfolio Value", align: "right" },
+                                                    { key: "cash", label: "Cash Balance", align: "right" },
+                                                    { key: "invested", label: "Invested", align: "right" },
+                                                    { key: "dayProfit", label: "Daily P&L", align: "right" },
+                                                    { key: "totalProfit", label: "Total P&L", align: "right" },
+                                                ].map((col) => (
+                                                    <th
+                                                        key={col.key}
+                                                        className={`${col.align === "left" ? "text-left" : "text-right"} p-3 cursor-pointer hover:text-white transition-colors select-none`}
+                                                        onClick={() => handleSort(col.key)}
+                                                    >
+                                                        <div className={`flex items-center gap-1 ${col.align === "right" ? "justify-end" : ""}`}>
+                                                            {col.label}
+                                                            {sortConfig.key === col.key && (
+                                                                <span className="text-[10px]">{sortConfig.direction === "asc" ? "▲" : "▼"}</span>
+                                                            )}
+                                                        </div>
+                                                    </th>
+                                                ))}
+                                                <th className="text-left p-3 pl-6">Trading Journal</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-white/5">
+                                            {sortedDiary.map((day, idx) => (
+                                                <tr key={day.date} className="hover:bg-white/5 transition-colors">
+                                                    <td className="p-3 text-gray-300 font-mono text-xs align-top">{day.date}</td>
+                                                    <td className="p-3 text-right font-bold text-white align-top">
+                                                        ₹{day.portfolioValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                    </td>
+                                                    <td className="p-3 text-right text-gray-400 align-top">
+                                                        ₹{day.cash.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                    </td>
+                                                    <td className="p-3 text-right text-purple-300 align-top">
+                                                        ₹{day.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                    </td>
+                                                    <td className={`p-3 text-right font-medium align-top ${day.dayProfit >= 0 ? "text-green-400" : "text-red-400"}`}>
+                                                        {day.dayProfit >= 0 ? "+" : ""}₹{day.dayProfit.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                    </td>
+                                                    <td className={`p-3 text-right font-medium align-top ${day.totalProfit >= 0 ? "text-green-400" : "text-red-400"}`}>
+                                                        ₹{day.totalProfit.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                    </td>
+                                                    <td className="p-3 pl-6 text-xs text-gray-500 align-top">
+                                                        {day.activities && day.activities.length > 0 ? (
+                                                            <div className="flex flex-col gap-2">
+                                                                {day.activities.map((act, i) => (
+                                                                    <div key={i} className={`flex items-center gap-2 p-2 rounded border ${act.type === "BUY"
+                                                                        ? "bg-cyan-900/20 border-cyan-500/30 text-cyan-200"
+                                                                        : act.profit && act.profit >= 0
+                                                                            ? "bg-green-900/20 border-green-500/30 text-green-200"
+                                                                            : "bg-red-900/20 border-red-500/30 text-red-200"
+                                                                        }`}>
+                                                                        <span className={`font-bold text-[10px] px-1.5 py-0.5 rounded ${act.type === "BUY" ? "bg-cyan-500 text-black" : act.profit && act.profit >= 0 ? "bg-green-500 text-black" : "bg-red-500 text-white"
+                                                                            }`}>
+                                                                            {act.type}
+                                                                        </span>
+                                                                        <span className="font-bold">{act.symbol}</span>
+                                                                        <span className="text-gray-400">
+                                                                            {act.quantity} qty @ ₹{act.price.toFixed(1)}
+                                                                        </span>
+                                                                        <span className="opacity-75">
+                                                                            (₹{act.amount.toLocaleString(undefined, { maximumFractionDigits: 0 })})
+                                                                        </span>
+                                                                        {act.type === "BUY" && act.buyNumber > 1 && (
+                                                                            <span className="text-[10px] bg-blue-600/50 px-1 rounded text-white ml-auto">
+                                                                                Re-Entry #{act.buyNumber}
+                                                                            </span>
+                                                                        )}
+                                                                        {act.type === "SELL" && act.profit !== undefined && (
+                                                                            <span className={`font-bold ml-auto ${act.profit >= 0 ? "text-green-400" : "text-red-400"}`}>
+                                                                                {act.profit >= 0 ? "+" : ""}₹{act.profit.toFixed(0)}
+                                                                            </span>
+                                                                        )}
+                                                                        {act.type === "SELL" && act.purchaseDate && (
+                                                                            <span className="text-[10px] text-gray-500 ml-2">
+                                                                                (Purchased: {act.purchaseDate})
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        ) : (
+                                                            <span>-</span>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
                     </>
                 )}
             </div>

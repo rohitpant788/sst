@@ -24,3 +24,25 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+@media print {
+  /* Hide SIDEBAR and other non-essential elements */
+  aside, nav, .print-hidden {
+    display: none !important;
+  }
+
+  /* Ensure background colors print */
+  body {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    background-color: #0d0d0d; /* Keep dark background */
+    color: white;
+  }
+  
+  /* Reset margins for content */
+  main, div {
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+  }
+}
